@@ -8,27 +8,36 @@
  */
 
 #include <assert.h>
-#include <errno.h>
-#include <stdio.h> /* fopen (), fwrite (), fclose () */
 #include <string.h> /* strlen () */
-
-#include <sys/types.h>
-#include <unistd.h> /* stat */
 
 #include <event2/buffer.h>
 
 #include "transmission.h"
-#include "session.h"
 #include "crypto.h" /* tr_sha1 */
+#include "file.h"
 #include "log.h"
 #include "metainfo.h"
 #include "platform.h" /* tr_getTorrentDir () */
+#include "session.h"
 #include "utils.h"
 #include "variant.h"
 
 /***
 ****
 ***/
+
+
+#ifdef _WIN32
+  #define PATH_DELIMITER_CHARS "/\\"
+#else
+  #define PATH_DELIMITER_CHARS "/"
+#endif
+
+static inline bool
+char_is_path_separator (char c)
+{
+  return strchr(PATH_DELIMITER_CHARS, c) != NULL;
+}
 
 char*
 tr_metainfoGetBasename (const tr_info * inf)
@@ -39,7 +48,7 @@ tr_metainfoGetBasename (const tr_info * inf)
   char * ret = tr_strdup_printf ("%s.%16.16s", name, inf->hashString);
 
   for (i=0; i<name_len; ++i)
-    if (ret[i] == '/')
+    if (char_is_path_separator (ret[i]))
       ret[i] = '_';
 
   return ret;
@@ -60,47 +69,64 @@ getTorrentFilename (const tr_session * session, const tr_info * inf)
 ***/
 
 static bool
-path_is_suspicious (const char * path)
+path_component_is_suspicious (const char * component)
 {
-  return (path == NULL)
-      || (!strncmp (path, "../", 3))
-      || (strstr (path, "/../") != NULL);
+  return (component == NULL)
+      || (strpbrk (component, PATH_DELIMITER_CHARS) != NULL)
+      || (strcmp (component, ".") == 0)
+      || (strcmp (component, "..") == 0);
 }
 
 static bool
 getfile (char ** setme, const char * root, tr_variant * path, struct evbuffer * buf)
 {
   bool success = false;
+  size_t root_len = 0;
+
+  *setme = NULL;
+
+  /* root's already been checked by caller */
+  assert (!path_component_is_suspicious (root));
 
   if (tr_variantIsList (path))
     {
       int i;
       const int n = tr_variantListSize (path);
 
+      success = true;
       evbuffer_drain (buf, evbuffer_get_length (buf));
-      evbuffer_add (buf, root, strlen (root));
+      root_len = strlen (root);
+      evbuffer_add (buf, root, root_len);
+
       for (i=0; i<n; i++)
         {
           size_t len;
           const char * str;
 
-          if (tr_variantGetStr (tr_variantListChild (path, i), &str, &len))
+          if (!tr_variantGetStr (tr_variantListChild (path, i), &str, &len) ||
+              path_component_is_suspicious (str))
             {
-              evbuffer_add (buf, TR_PATH_DELIMITER_STR, 1);
-              evbuffer_add (buf, str, len);
+              success = false;
+              break;
             }
-        }
 
-      *setme = tr_utf8clean ((char*)evbuffer_pullup (buf, -1), evbuffer_get_length (buf));
-      /* fprintf (stderr, "[%s]\n", *setme); */
-      success = true;
+          if (!*str)
+            continue;
+
+          evbuffer_add (buf, TR_PATH_DELIMITER_STR, 1);
+          evbuffer_add (buf, str, len);
+        }
     }
 
-  if ((*setme != NULL) && path_is_suspicious (*setme))
+  if (success && (evbuffer_get_length (buf) <= root_len))
     {
-      tr_free (*setme);
-      *setme = NULL;
       success = false;
+    }
+
+  if (success)
+    {
+      *setme = tr_utf8clean ((char*)evbuffer_pullup (buf, -1), evbuffer_get_length (buf));
+      /*fprintf (stderr, "[%s]\n", *setme);*/
     }
 
   return success;
@@ -116,9 +142,16 @@ parseFiles (tr_info * inf, tr_variant * files, const tr_variant * length)
   if (tr_variantIsList (files)) /* multi-file mode */
     {
       tr_file_index_t i;
-      struct evbuffer * buf = evbuffer_new ();
+      struct evbuffer * buf;
+      const char * result;
 
-      inf->isMultifile = 1;
+      if (path_component_is_suspicious (inf->name))
+        return "path";
+
+      buf = evbuffer_new ();
+      result = NULL;
+
+      inf->isFolder = true;
       inf->fileCount = tr_variantListSize (files);
       inf->files = tr_new0 (tr_file, inf->fileCount);
 
@@ -129,30 +162,43 @@ parseFiles (tr_info * inf, tr_variant * files, const tr_variant * length)
 
           file = tr_variantListChild (files, i);
           if (!tr_variantIsDict (file))
-            return "files";
+            {
+              result = "files";
+              break;
+            }
 
           if (!tr_variantDictFindList (file, TR_KEY_path_utf_8, &path))
             if (!tr_variantDictFindList (file, TR_KEY_path, &path))
-              return "path";
+              {
+                result = "path";
+                break;
+              }
 
           if (!getfile (&inf->files[i].name, inf->name, path, buf))
-            return "path";
+            {
+              result = "path";
+              break;
+            }
 
           if (!tr_variantDictFindInt (file, TR_KEY_length, &len))
-            return "length";
+            {
+              result = "length";
+              break;
+            }
 
           inf->files[i].length = len;
           inf->totalSize      += len;
         }
 
       evbuffer_free (buf);
+      return result;
     }
   else if (tr_variantGetInt (length, &len)) /* single-file mode */
     {
-      if (path_is_suspicious (inf->name))
+      if (path_component_is_suspicious (inf->name))
         return "path";
 
-      inf->isMultifile      = 0;
+      inf->isFolder         = false;
       inf->fileCount        = 1;
       inf->files            = tr_new0 (tr_file, 1);
       inf->files[0].name    = tr_strdup (inf->name);
@@ -585,7 +631,7 @@ tr_metainfoRemoveSaved (const tr_session * session, const tr_info * inf)
   char * filename;
 
   filename = getTorrentFilename (session, inf);
-  tr_remove (filename);
+  tr_sys_path_remove (filename, NULL);
   tr_free (filename);
 }
 

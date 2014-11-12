@@ -81,22 +81,6 @@ TrMainWindow :: getStockIcon (const QString& name, int fallback)
   return icon;
 }
 
-namespace
-{
-  QSize calculateTextButtonSizeHint (QPushButton * button)
-  {
-    QStyleOptionButton opt;
-    opt.initFrom (button);
-    QString s (button->text ());
-    if (s.isEmpty ())
-      s = QString::fromLatin1 ("XXXX");
-    QFontMetrics fm = button->fontMetrics ();
-    QSize sz = fm.size (Qt::TextShowMnemonic, s);
-    return button->style ()->sizeFromContents (QStyle::CT_PushButton, &opt, sz, button).expandedTo (QApplication::globalStrut ());
-  }
-}
-
-
 TrMainWindow :: TrMainWindow (Session& session, Prefs& prefs, TorrentModel& model, bool minimized):
   myLastFullUpdateTime (0),
   mySessionDialog (new SessionDialog (session, prefs, this)),
@@ -723,7 +707,11 @@ TrMainWindow :: refreshTrayIcon ()
 
   myModel.getTransferSpeed (upSpeed, upCount, downSpeed, downCount);
 
-  if (!upCount && !downCount)
+  if (myNetworkError)
+    {
+      tip  = tr ("Network Error");
+    }
+  else if (!upCount && !downCount)
     {
       tip = tr ("Idle");
     }
@@ -1177,8 +1165,13 @@ TrMainWindow :: openTorrent ()
   QCheckBox * b = new QCheckBox (tr ("Show &options dialog"));
   b->setChecked (myPrefs.getBool (Prefs::OPTIONS_PROMPT));
   b->setObjectName (SHOW_OPTIONS_CHECKBOX_NAME);
-  QGridLayout * l = dynamic_cast<QGridLayout*> (d->layout ());
-  l->addWidget (b, l->rowCount (), 0, 1, -1, Qt::AlignLeft);
+  auto l = dynamic_cast<QGridLayout*> (d->layout ());
+  if (l == nullptr)
+    {
+      l = new QGridLayout;
+      d->setLayout (l);
+    }
+  l->addWidget (b, l->rowCount(), 0, 1, -1, Qt::AlignLeft);
 
   connect (d, SIGNAL (filesSelected (const QStringList&)),
            this, SLOT (addTorrents (const QStringList&)));
@@ -1319,8 +1312,13 @@ TrMainWindow :: removeTorrents (const bool deleteFiles)
   msgBox.setStandardButtons (QMessageBox::Ok | QMessageBox::Cancel);
   msgBox.setDefaultButton (QMessageBox::Cancel);
   msgBox.setIcon (QMessageBox::Question);
-  /* hack needed to keep the dialog from being too narrow */
-  QGridLayout* layout = (QGridLayout*)msgBox.layout ();
+  // hack needed to keep the dialog from being too narrow
+  auto layout = dynamic_cast<QGridLayout*>(msgBox.layout());
+  if (layout == nullptr)
+    {
+      layout = new QGridLayout;
+      msgBox.setLayout (layout);
+    }
   QSpacerItem* spacer = new QSpacerItem (450, 0, QSizePolicy::Minimum, QSizePolicy::Expanding);
   layout->addItem (spacer, layout->rowCount (), 0, 1, layout->columnCount ());
 
@@ -1398,10 +1396,18 @@ TrMainWindow :: dataSendProgress ()
 void
 TrMainWindow :: onError (QNetworkReply::NetworkError code)
 {
-    if (code != QNetworkReply::NoError)
-        myNetworkError = true;
-    else
-        myNetworkError = false;
+  const bool hadError = myNetworkError;
+  const bool haveError = (code != QNetworkReply::NoError)
+                      && (code != QNetworkReply::UnknownContentError);
+
+  myNetworkError = haveError;
+  refreshTrayIconSoon();
+  updateNetworkIcon();
+
+  // Refresh our model if we've just gotten a clean connection to the session.
+  // That way we can rebuild after a restart of transmission-daemon
+  if (hadError && !haveError)
+    myModel.clear();
 }
 
 void

@@ -7,16 +7,14 @@
  * $Id$
  */
 
+#include <errno.h> /* EINVAL */
 #include <signal.h> /* signal () */
-#include <sys/types.h> /* stat */
-#include <sys/stat.h> /* stat */
-#ifndef WIN32
+#ifndef _WIN32
  #include <sys/wait.h> /* wait () */
 #else
  #include <process.h>
 #endif
-#include <unistd.h> /* stat */
-#include <dirent.h>
+#include <unistd.h> /* fork (), execvp (), _exit () */
 
 #include <assert.h>
 #include <math.h>
@@ -33,8 +31,9 @@
 #include "cache.h"
 #include "completion.h"
 #include "crypto.h" /* for tr_sha1 */
-#include "resume.h"
+#include "error.h"
 #include "fdlimit.h" /* tr_fdTorrentClose */
+#include "file.h"
 #include "inout.h" /* tr_ioTestPiece () */
 #include "log.h"
 #include "magnet.h"
@@ -43,6 +42,7 @@
 #include "peer-mgr.h"
 #include "platform.h" /* TR_PATH_DELIMITER_STR */
 #include "ptrarray.h"
+#include "resume.h"
 #include "session.h"
 #include "torrent.h"
 #include "torrent-magnet.h"
@@ -854,7 +854,6 @@ torrentInit (tr_torrent * tor, const tr_ctor * ctor)
   uint64_t loaded;
   const char * dir;
   bool isNewTorrent;
-  struct stat st;
   tr_session * session = tr_ctorGetSession (ctor);
   static int nextUniqueId = 1;
 
@@ -945,7 +944,7 @@ torrentInit (tr_torrent * tor, const tr_ctor * ctor)
     }
 
   /* if we don't have a local .torrent file already, assume the torrent is new */
-  isNewTorrent = stat (tor->info.torrent, &st);
+  isNewTorrent = !tr_sys_path_exists (tor->info.torrent, NULL);
 
   /* maybe save our own copy of the metainfo */
   if (tr_ctorGetSave (ctor))
@@ -1666,12 +1665,11 @@ tr_torrentGetCurrentSizeOnDisk (const tr_torrent * tor)
 
   for (i=0; i<n; ++i)
     {
-      struct stat sb;
+      tr_sys_path_info info;
       char * filename = tr_torrentFindFile (tor, i);
 
-      sb.st_size = 0;
-      if (filename && !stat (filename, &sb))
-        byte_count += sb.st_size;
+      if (filename != NULL && tr_sys_path_get_info (filename, 0, &info, NULL))
+        byte_count += info.size;
 
       tr_free (filename);
     }
@@ -2080,7 +2078,7 @@ tr_torrentClearIdleLimitHitCallback (tr_torrent * torrent)
 static void
 onSigCHLD (int i UNUSED)
 {
-#ifdef WIN32
+#ifdef _WIN32
 
   _cwait (NULL, -1, WAIT_CHILD);
 
@@ -2118,7 +2116,7 @@ torrentCallScript (const tr_torrent * tor, const char * script)
 
       tr_logAddTorInfo (tor, "Calling script \"%s\"", script);
 
-#ifdef WIN32
+#ifdef _WIN32
       if (_spawnvpe (_P_NOWAIT, script, (const char*)cmd, env) == -1)
         tr_logAddTorErr (tor, "error executing script \"%s\": %s", cmd[0], tr_strerror (errno));
 #else
@@ -2794,16 +2792,17 @@ tr_torrentGetBytesLeftToAllocate (const tr_torrent * tor)
     {
       if (!tor->info.files[i].dnd)
         {
-          struct stat sb;
+          tr_sys_path_info info;
           const uint64_t length = tor->info.files[i].length;
           char * path = tr_torrentFindFile (tor, i);
 
           bytesLeft += length;
 
-          if ((path != NULL) && !stat (path, &sb)
-                             && S_ISREG (sb.st_mode)
-                             && ((uint64_t)sb.st_size <= length))
-            bytesLeft -= sb.st_size;
+          if (path != NULL &&
+              tr_sys_path_get_info (path, 0, &info, NULL) &&
+              info.type == TR_SYS_PATH_IS_FILE &&
+              info.size <= length)
+            bytesLeft -= info.size;
 
           tr_free (path);
         }
@@ -2827,7 +2826,7 @@ isJunkFile (const char * base)
     if (!strcmp (base, files[i]))
       return true;
 
-#ifdef SYS_DARWIN
+#ifdef __APPLE__
   /* check for resource forks. <http://support.apple.com/kb/TA20578> */
   if (!memcmp (base, "._", 2))
     return true;
@@ -2839,29 +2838,30 @@ isJunkFile (const char * base)
 static void
 removeEmptyFoldersAndJunkFiles (const char * folder)
 {
-  DIR * odir;
+  tr_sys_dir_t odir;
 
-  if ((odir = opendir (folder)))
+  if ((odir = tr_sys_dir_open (folder, NULL)) != TR_BAD_SYS_DIR)
     {
-      struct dirent * d;
-      while ((d = readdir (odir)))
+      const char * name;
+      while ((name = tr_sys_dir_read_name (odir, NULL)) != NULL)
         {
-          if (strcmp (d->d_name, ".") && strcmp (d->d_name, ".."))
+          if (strcmp (name, ".") != 0 && strcmp (name, "..") != 0)
             {
-              struct stat sb;
-              char * filename = tr_buildPath (folder, d->d_name, NULL);
+              tr_sys_path_info info;
+              char * filename = tr_buildPath (folder, name, NULL);
 
-              if (!stat (filename, &sb) && S_ISDIR (sb.st_mode))
+              if (tr_sys_path_get_info (filename, 0, &info, NULL) &&
+                  info.type == TR_SYS_PATH_IS_DIRECTORY)
                 removeEmptyFoldersAndJunkFiles (filename);
-              else if (isJunkFile (d->d_name))
-                tr_remove (filename);
+              else if (isJunkFile (name))
+                tr_sys_path_remove (filename, NULL);
 
               tr_free (filename);
             }
         }
 
-      tr_remove (folder);
-      closedir (odir);
+      tr_sys_path_remove (folder, NULL);
+      tr_sys_dir_close (odir, NULL);
     }
 }
 
@@ -2880,12 +2880,16 @@ deleteLocalData (tr_torrent * tor, tr_fileFunc func)
   int i, n;
   tr_file_index_t f;
   char * base;
-  DIR * odir;
+  tr_sys_dir_t odir;
   char * tmpdir = NULL;
   tr_ptrArray files = TR_PTR_ARRAY_INIT;
   tr_ptrArray folders = TR_PTR_ARRAY_INIT;
   PtrArrayCompareFunc vstrcmp = (PtrArrayCompareFunc)strcmp;
   const char * const top = tor->currentDir;
+
+  /* don't try to delete local data if the directory's gone missing */
+  if (!tr_sys_path_exists (top, NULL))
+    return;
 
   /* if it's a magnet link, there's nothing to move... */
   if (!tr_torrentHasMetadata (tor))
@@ -2897,7 +2901,7 @@ deleteLocalData (tr_torrent * tor, tr_fileFunc func)
 
   base = tr_strdup_printf ("%s__XXXXXX", tr_torrentName (tor));
   tmpdir = tr_buildPath (top, base, NULL);
-  tr_mkdtemp (tmpdir);
+  tr_sys_dir_create_temp (tmpdir, NULL);
   tr_free (base);
 
   for (f=0; f<tor->info.fileCount; ++f)
@@ -2906,13 +2910,13 @@ deleteLocalData (tr_torrent * tor, tr_fileFunc func)
 
       /* try to find the file, looking in the partial and download dirs */
       filename = tr_buildPath (top, tor->info.files[f].name, NULL);
-      if (!tr_fileExists (filename, NULL))
+      if (!tr_sys_path_exists (filename, NULL))
         {
           char * partial = tr_torrentBuildPartial (tor, f);
           tr_free (filename);
           filename = tr_buildPath (top, partial, NULL);
           tr_free (partial);
-          if (!tr_fileExists (filename, NULL))
+          if (!tr_sys_path_exists (filename, NULL))
             {
               tr_free (filename);
               filename = NULL;
@@ -2939,28 +2943,28 @@ deleteLocalData (tr_torrent * tor, tr_fileFunc func)
   ***/
 
   /* try deleting the local data's top-level files & folders */
-  if ((odir = opendir (tmpdir)))
+  if ((odir = tr_sys_dir_open (tmpdir, NULL)) != TR_BAD_SYS_DIR)
     {
-      struct dirent * d;
-      while ((d = readdir (odir)))
+      const char * name;
+      while ((name = tr_sys_dir_read_name (odir, NULL)) != NULL)
         {
-          if (strcmp (d->d_name, ".") && strcmp (d->d_name, ".."))
+          if (strcmp (name, ".") != 0 && strcmp (name, "..") != 0)
             {
-              char * file = tr_buildPath (tmpdir, d->d_name, NULL);
+              char * file = tr_buildPath (tmpdir, name, NULL);
               func (file);
               tr_free (file);
             }
         }
-      closedir (odir);
+      tr_sys_dir_close (odir, NULL);
     }
 
   /* go from the bottom up */
   for (i=0, n=tr_ptrArraySize (&files); i<n; ++i)
     {
       char * walk = tr_strdup (tr_ptrArrayNth (&files, i));
-      while (tr_fileExists (walk, NULL) && !tr_is_same_file (tmpdir, walk))
+      while (tr_sys_path_exists (walk, NULL) && !tr_sys_path_is_same (tmpdir, walk, NULL))
         {
-          char * tmp = tr_dirname (walk);
+          char * tmp = tr_sys_path_dirname (walk, NULL);
           func (walk);
           tr_free (walk);
           walk = tmp;
@@ -2982,16 +2986,16 @@ deleteLocalData (tr_torrent * tor, tr_fileFunc func)
 
       /* get the directory that this file goes in... */
       filename = tr_buildPath (top, tor->info.files[f].name, NULL);
-      dir = tr_dirname (filename);
+      dir = tr_sys_path_dirname (filename, NULL);
       tr_free (filename);
 
       /* walk up the directory tree until we reach 'top' */
-      if (!tr_is_same_file (top, dir) && strcmp (top, dir))
+      if (!tr_sys_path_is_same (top, dir, NULL) && strcmp (top, dir) != 0)
         {
           for (;;)
             {
-              char * parent = tr_dirname (dir);
-              if (tr_is_same_file (top, parent) || !strcmp (top, parent))
+              char * parent = tr_sys_path_dirname (dir, NULL);
+              if (tr_sys_path_is_same (top, parent, NULL) || strcmp (top, parent) == 0)
                 {
                   if (tr_ptrArrayFindSorted (&folders, dir, vstrcmp) == NULL)
                     tr_ptrArrayInsertSorted (&folders, tr_strdup(dir), vstrcmp);
@@ -3012,7 +3016,7 @@ deleteLocalData (tr_torrent * tor, tr_fileFunc func)
     removeEmptyFoldersAndJunkFiles (tr_ptrArrayNth (&folders, i));
 
   /* cleanup */
-  tr_remove (tmpdir);
+  tr_sys_path_remove (tmpdir, NULL);
   tr_free (tmpdir);
   tr_ptrArrayDestruct (&folders, tr_free);
   tr_ptrArrayDestruct (&files, tr_free);
@@ -3062,9 +3066,9 @@ setLocation (void * vdata)
   tr_logAddDebug ("Moving \"%s\" location from currentDir \"%s\" to \"%s\"",
                   tr_torrentName (tor), tor->currentDir, location);
 
-  tr_mkdirp (location, 0777);
+  tr_sys_dir_create (location, TR_SYS_DIR_CREATE_PARENTS, 0777, NULL);
 
-  if (!tr_is_same_file (location, tor->currentDir))
+  if (!tr_sys_path_is_same (location, tor->currentDir, NULL))
     {
       tr_file_index_t i;
 
@@ -3087,7 +3091,7 @@ setLocation (void * vdata)
 
               tr_logAddDebug ("Found file #%d: %s", (int)i, oldpath);
 
-              if (do_move && !tr_is_same_file (oldpath, newpath))
+              if (do_move && !tr_sys_path_is_same (oldpath, newpath, NULL))
                 {
                   bool renamed = false;
                   errno = 0;
@@ -3199,9 +3203,13 @@ tr_torrentFileCompleted (tr_torrent * tor, tr_file_index_t fileIndex)
         {
           char * oldpath = tr_buildPath (base, sub, NULL);
           char * newpath = tr_buildPath (base, f->name, NULL);
+          tr_error * error = NULL;
 
-          if (tr_rename (oldpath, newpath))
-            tr_logAddTorErr (tor, "Error moving \"%s\" to \"%s\": %s", oldpath, newpath, tr_strerror (errno));
+          if (!tr_sys_path_rename (oldpath, newpath, &error))
+            {
+              tr_logAddTorErr (tor, "Error moving \"%s\" to \"%s\": %s", oldpath, newpath, error->message);
+              tr_error_free (error);
+            }
 
           tr_free (newpath);
           tr_free (oldpath);
@@ -3283,6 +3291,7 @@ tr_torrentFindFile2 (const tr_torrent * tor, tr_file_index_t fileNum,
   const tr_file * file;
   const char * b = NULL;
   const char * s = NULL;
+  tr_sys_path_info file_info;
 
   assert (tr_isTorrent (tor));
   assert (fileNum < tor->info.fileCount);
@@ -3293,7 +3302,7 @@ tr_torrentFindFile2 (const tr_torrent * tor, tr_file_index_t fileNum,
   if (b == NULL)
     {
       char * filename = tr_buildPath (tor->downloadDir, file->name, NULL);
-      if (tr_fileExists (filename, mtime))
+      if (tr_sys_path_get_info (filename, 0, &file_info, NULL))
         {
           b = tor->downloadDir;
           s = file->name;
@@ -3305,7 +3314,7 @@ tr_torrentFindFile2 (const tr_torrent * tor, tr_file_index_t fileNum,
   if ((b == NULL) && (tor->incompleteDir != NULL))
     {
       char * filename = tr_buildPath (tor->incompleteDir, file->name, NULL);
-      if (tr_fileExists (filename, mtime))
+      if (tr_sys_path_get_info (filename, 0, &file_info, NULL))
         {
           b = tor->incompleteDir;
           s = file->name;
@@ -3320,7 +3329,7 @@ tr_torrentFindFile2 (const tr_torrent * tor, tr_file_index_t fileNum,
   if ((b == NULL) && (tor->incompleteDir != NULL))
     {
       char * filename = tr_buildPath (tor->incompleteDir, part, NULL);
-      if (tr_fileExists (filename, mtime))
+      if (tr_sys_path_get_info (filename, 0, &file_info, NULL))
         {
           b = tor->incompleteDir;
           s = part;
@@ -3332,7 +3341,7 @@ tr_torrentFindFile2 (const tr_torrent * tor, tr_file_index_t fileNum,
   if (b == NULL)
     {
       char * filename = tr_buildPath (tor->downloadDir, part, NULL);
-      if (tr_fileExists (filename, mtime))
+      if (tr_sys_path_get_info (filename, 0, &file_info, NULL))
         {
           b = tor->downloadDir;
           s = part;
@@ -3345,6 +3354,9 @@ tr_torrentFindFile2 (const tr_torrent * tor, tr_file_index_t fileNum,
     *base = b;
   if (subpath != NULL)
     *subpath = tr_strdup (s);
+  if (mtime != NULL)
+    *mtime = file_info.last_modified_at;
+
 
   /* cleanup */
   tr_free (part);
@@ -3592,7 +3604,8 @@ renameFindAffectedFiles (tr_torrent * tor, const char * oldpath, size_t * setme_
     {
       const char * name = tor->info.files[i].name;
       const size_t len = strlen (name);
-      if ((len >= oldpath_len) && !memcmp (oldpath, name, oldpath_len))
+      if ((len == oldpath_len || (len > oldpath_len && name[oldpath_len] == '/')) &&
+          !memcmp (oldpath, name, oldpath_len))
         indices[n++] = i;
     }
 
@@ -3607,7 +3620,7 @@ renamePath (tr_torrent  * tor,
 {
   char * src;
   const char * base;
-  int error = 0;
+  int err = 0;
 
   if (!tr_torrentIsSeed(tor) && (tor->incompleteDir != NULL))
     base = tor->incompleteDir;
@@ -3615,18 +3628,18 @@ renamePath (tr_torrent  * tor,
     base = tor->downloadDir;
 
   src = tr_buildPath (base, oldpath, NULL);
-  if (!tr_fileExists (src, NULL)) /* check for it as a partial */
+  if (!tr_sys_path_exists (src, NULL)) /* check for it as a partial */
     {
       char * tmp = tr_strdup_printf ("%s.part", src);
       tr_free (src);
       src = tmp;
     }
 
-  if (tr_fileExists (src, NULL))
+  if (tr_sys_path_exists (src, NULL))
     {
       int tmp;
       bool tgt_exists;
-      char * parent = tr_dirname (src);
+      char * parent = tr_sys_path_dirname (src, NULL);
       char * tgt;
 
       if (tr_str_has_suffix (src, ".part"))
@@ -3635,17 +3648,19 @@ renamePath (tr_torrent  * tor,
         tgt = tr_buildPath (parent, newname, NULL);
 
       tmp = errno;
-      tgt_exists = tr_fileExists (tgt, NULL);
+      tgt_exists = tr_sys_path_exists (tgt, NULL);
       errno = tmp;
 
       if (!tgt_exists)
         {
-          int rv;
+          tr_error * error = NULL;
 
           tmp = errno;
-          rv = tr_rename (src, tgt);
-          if (rv != 0)
-            error = errno;
+          if (!tr_sys_path_rename (src, tgt, &error))
+            {
+              err = error->code;
+              tr_error_free (error);
+            }
           errno = tmp;
         }
 
@@ -3655,7 +3670,7 @@ renamePath (tr_torrent  * tor,
 
   tr_free (src);
 
-  return error;
+  return err;
 }
 
 static void
@@ -3677,7 +3692,7 @@ renameTorrentFileString (tr_torrent       * tor,
     }
   else
     {
-      char * tmp = tr_dirname (oldpath);
+      char * tmp = tr_sys_path_dirname (oldpath, NULL);
 
       if (oldpath_len >= strlen(file->name))
         name = tr_buildPath (tmp, newname, NULL);
@@ -3735,7 +3750,7 @@ torrentRenamePath (void * vdata)
       file_indices = renameFindAffectedFiles (tor, oldpath, &n);
       if (n == 0)
         {
-          errno = EINVAL;
+          error = EINVAL;
         }
       else
         {

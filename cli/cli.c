@@ -28,6 +28,8 @@
 #include <signal.h>
 
 #include <libtransmission/transmission.h>
+#include <libtransmission/error.h>
+#include <libtransmission/file.h>
 #include <libtransmission/tr-getopt.h>
 #include <libtransmission/utils.h> /* tr_wait_msec */
 #include <libtransmission/variant.h>
@@ -231,6 +233,10 @@ main (int argc, char ** argv)
   size_t        fileLength;
   const char  * str;
 
+#ifdef _WIN32
+  tr_win32_make_args_utf8 (&argc, &argv);
+#endif
+
   tr_formatter_mem_init (MEM_K, MEM_K_STR, MEM_M_STR, MEM_G_STR, MEM_T_STR);
   tr_formatter_size_init (DISK_K,DISK_K_STR, DISK_M_STR, DISK_G_STR, DISK_T_STR);
   tr_formatter_speed_init (SPEED_K, SPEED_K_STR, SPEED_M_STR, SPEED_G_STR, SPEED_T_STR);
@@ -265,13 +271,13 @@ main (int argc, char ** argv)
 
   if (tr_variantDictFindStr (&settings, TR_KEY_download_dir, &str, NULL))
     {
-      if (!tr_fileExists (str, NULL))
+      if (!tr_sys_path_exists (str, NULL))
         {
-          tr_mkdirp (str, 0700);
-
-          if (!tr_fileExists (str, NULL))
+          tr_error * error = NULL;
+          if (!tr_sys_dir_create (str, TR_SYS_DIR_CREATE_PARENTS, 0700, &error))
             {
-              fprintf (stderr, "Unable to create download directory \"%s\"!\n", str);
+              fprintf (stderr, "Unable to create download directory \"%s\": %s\n", str, error->message);
+              tr_error_free (error);
               return EXIT_FAILURE;
             }
         }
@@ -319,7 +325,7 @@ main (int argc, char ** argv)
     }
 
   signal (SIGINT, sigHandler);
-#ifndef WIN32
+#ifndef _WIN32
   signal (SIGHUP, sigHandler);
 #endif
   tr_torrentStart (tor);
@@ -489,7 +495,7 @@ sigHandler (int signal)
         gotsig = true;
         break;
 
-#ifndef WIN32
+#ifndef _WIN32
       case SIGHUP:
         manualUpdate = true;
         break;

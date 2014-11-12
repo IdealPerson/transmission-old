@@ -10,6 +10,13 @@
 #include <limits.h> /* INT_MAX */
 #include <math.h> /* sqrt () */
 #include <string.h> /* strlen () */
+#include <stdlib.h> /* setenv (), unsetenv () */
+
+#ifdef _WIN32
+ #include <windows.h>
+ #define setenv(key, value, unused) SetEnvironmentVariableA (key, value)
+ #define unsetenv(key) SetEnvironmentVariableA (key, NULL)
+#endif
 
 #include "transmission.h"
 #include "ConvertUTF.h" /* tr_utf8_validate*/
@@ -204,7 +211,7 @@ test_lowerbound (void)
   int i;
   const int A[] = { 1, 2, 3, 3, 3, 5, 8 };
   const int expected_pos[] = { 0, 1, 2, 5, 5, 6, 6, 6, 7, 7 };
-  const int expected_exact[] = { true, true, true, false, true, false, false, true, false, false };
+  const bool expected_exact[] = { true, true, true, false, true, false, false, true, false, false };
   const int N = sizeof (A) / sizeof (A[0]);
 
   for (i=1; i<=10; i++)
@@ -421,6 +428,108 @@ test_cryptoRand (void)
   return 0;
 }
 
+static char *
+test_strdup_printf_valist (const char * fmt, ...)
+{
+  va_list args;
+  char * ret;
+
+  va_start (args, fmt);
+  ret = tr_strdup_vprintf (fmt, args);
+  va_end (args);
+
+  return ret;
+}
+
+static int
+test_strdup_printf (void)
+{
+  char * s, * s2, * s3;
+
+  s = tr_strdup_printf ("%s", "test");
+  check_streq ("test", s);
+  tr_free (s);
+
+  s = tr_strdup_printf ("%d %s %c %u", -1, "0", '1', 2);
+  check_streq ("-1 0 1 2", s);
+  tr_free (s);
+
+  s3 = tr_malloc0 (4098);
+  memset (s3, '-', 4097);
+  s3[2047] = 't';
+  s3[2048] = 'e';
+  s3[2049] = 's';
+  s3[2050] = 't';
+
+  s2 = tr_malloc0 (4096);
+  memset (s2, '-', 4095);
+  s2[2047] = '%';
+  s2[2048] = 's';
+
+  s = tr_strdup_printf (s2, "test");
+  check_streq (s3, s);
+  tr_free (s);
+
+  tr_free (s2);
+
+  s = tr_strdup_printf ("%s", s3);
+  check_streq (s3, s);
+  tr_free (s);
+
+  tr_free (s3);
+
+  s = test_strdup_printf_valist ("\n-%s-%s-%s-\n", "\r", "\t", "\b");
+  check_streq ("\n-\r-\t-\b-\n", s);
+  tr_free (s);
+
+  return 0;
+}
+
+static int
+test_env (void)
+{
+  const char * test_key = "TR_TEST_ENV";
+  int x;
+  char * s;
+
+  unsetenv (test_key);
+
+  check (!tr_env_key_exists (test_key));
+  x = tr_env_get_int (test_key, 123);
+  check_int_eq (123, x);
+  s = tr_env_get_string (test_key, NULL);
+  check (s == NULL);
+  s = tr_env_get_string (test_key, "a");
+  check_streq ("a", s);
+  tr_free (s);
+
+  setenv (test_key, "", 1);
+
+  check (tr_env_key_exists (test_key));
+  x = tr_env_get_int (test_key, 456);
+  check_int_eq (456, x);
+  s = tr_env_get_string (test_key, NULL);
+  check_streq ("", s);
+  tr_free (s);
+  s = tr_env_get_string (test_key, "b");
+  check_streq ("", s);
+  tr_free (s);
+
+  setenv (test_key, "135", 1);
+
+  check (tr_env_key_exists (test_key));
+  x = tr_env_get_int (test_key, 789);
+  check_int_eq (135, x);
+  s = tr_env_get_string (test_key, NULL);
+  check_streq ("135", s);
+  tr_free (s);
+  s = tr_env_get_string (test_key, "c");
+  check_streq ("135", s);
+  tr_free (s);
+
+  return 0;
+}
+
 int
 main (void)
 {
@@ -434,10 +543,12 @@ main (void)
                              test_memmem,
                              test_numbers,
                              test_strip_positional_args,
+                             test_strdup_printf,
                              test_strstrip,
                              test_truncd,
                              test_url,
-                             test_utf8 };
+                             test_utf8,
+                             test_env };
 
   return runTests (tests, NUM_TESTS (tests));
 }

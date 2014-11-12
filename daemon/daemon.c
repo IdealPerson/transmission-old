@@ -19,8 +19,11 @@
 #include <unistd.h> /* daemon */
 
 #include <event2/buffer.h>
+#include <event2/event.h>
 
 #include <libtransmission/transmission.h>
+#include <libtransmission/error.h>
+#include <libtransmission/file.h>
 #include <libtransmission/tr-getopt.h>
 #include <libtransmission/log.h>
 #include <libtransmission/utils.h>
@@ -58,15 +61,13 @@
 #define SPEED_G_STR "GB/s"
 #define SPEED_T_STR "TB/s"
 
-#define LOGFILE_MODE_STR "a+"
-
 static bool paused = false;
-static bool closing = false;
 static bool seenHUP = false;
 static const char *logfileName = NULL;
-static FILE *logfile = NULL;
+static tr_sys_file_t logfile = TR_BAD_SYS_FILE;
 static tr_session * mySession = NULL;
 static tr_quark key_pidfile = 0;
+static struct event_base *ev_base = NULL;
 
 /***
 ****  Config File
@@ -141,6 +142,30 @@ showUsage (void)
     exit (0);
 }
 
+static bool
+reopen_log_file (const char *filename)
+{
+    tr_error * error = NULL;
+    const tr_sys_file_t old_log_file = logfile;
+    const tr_sys_file_t new_log_file = tr_sys_file_open (filename,
+                                                         TR_SYS_FILE_WRITE | TR_SYS_FILE_CREATE | TR_SYS_FILE_APPEND,
+                                                         0666, &error);
+
+    if (new_log_file == TR_BAD_SYS_FILE)
+    {
+        fprintf (stderr, "Couldn't (re)open log file \"%s\": %s\n", filename, error->message);
+        tr_error_free (error);
+        return false;
+    }
+
+    logfile = new_log_file;
+
+    if (old_log_file != TR_BAD_SYS_FILE)
+        tr_sys_file_close (old_log_file, NULL);
+
+    return true;
+}
+
 static void
 gotsig (int sig)
 {
@@ -159,10 +184,9 @@ gotsig (int sig)
                 const char * configDir;
 
                 /* reopen the logfile to allow for log rotation */
-                if (logfileName) {
-                    logfile = freopen (logfileName, LOGFILE_MODE_STR, logfile);
-                    if (!logfile)
-                        fprintf (stderr, "Couldn't reopen \"%s\": %s\n", logfileName, tr_strerror (errno));
+                if (logfileName != NULL)
+                {
+                    reopen_log_file (logfileName);
                 }
 
                 configDir = tr_sessionGetConfigDir (mySession);
@@ -183,12 +207,12 @@ gotsig (int sig)
 
         case SIGINT:
         case SIGTERM:
-            closing = true;
+            event_base_loopexit(ev_base, NULL);
             break;
     }
 }
 
-#if defined (WIN32)
+#if defined (_WIN32)
  #define USE_NO_DAEMON
 #elif !defined (HAVE_DAEMON) || defined (__UCLIBC__)
  #define USE_TR_DAEMON
@@ -280,14 +304,19 @@ onFileAdded (tr_session * session, const char * dir, const char * file)
 
             if (!test && trash)
             {
+                tr_error * error = NULL;
+
                 tr_logAddInfo ("Deleting input .torrent file \"%s\"", file);
-                if (tr_remove (filename))
-                    tr_logAddError ("Error deleting .torrent file: %s", tr_strerror (errno));
+                if (!tr_sys_path_remove (filename, &error))
+                {
+                    tr_logAddError ("Error deleting .torrent file: %s", error->message);
+                    tr_error_free (error);
+                }
             }
             else
             {
                 char * new_filename = tr_strdup_printf ("%s.added", filename);
-                tr_rename (filename, new_filename);
+                tr_sys_path_rename (filename, new_filename, NULL);
                 tr_free (new_filename);
             }
         }
@@ -298,16 +327,18 @@ onFileAdded (tr_session * session, const char * dir, const char * file)
 }
 
 static void
-printMessage (FILE * logfile, int level, const char * name, const char * message, const char * file, int line)
+printMessage (tr_sys_file_t logfile, int level, const char * name, const char * message, const char * file, int line)
 {
-    if (logfile != NULL)
+    if (logfile != TR_BAD_SYS_FILE)
     {
         char timestr[64];
         tr_logGetTimeStr (timestr, sizeof (timestr));
         if (name)
-            fprintf (logfile, "[%s] %s %s (%s:%d)\n", timestr, name, message, file, line);
+            tr_sys_file_write_fmt (logfile, "[%s] %s %s (%s:%d)" TR_NATIVE_EOL_STR,
+                                   NULL, timestr, name, message, file, line);
         else
-            fprintf (logfile, "[%s] %s (%s:%d)\n", timestr, message, file, line);
+            tr_sys_file_write_fmt (logfile, "[%s] %s (%s:%d)" TR_NATIVE_EOL_STR,
+                                   NULL, timestr, message, file, line);
     }
 #ifdef HAVE_SYSLOG
     else /* daemon... write to syslog */
@@ -330,7 +361,7 @@ printMessage (FILE * logfile, int level, const char * name, const char * message
 }
 
 static void
-pumpLogMessages (FILE * logfile)
+pumpLogMessages (tr_sys_file_t logfile)
 {
     const tr_log_message * l;
     tr_log_message * list = tr_logGetQueue ();
@@ -338,10 +369,32 @@ pumpLogMessages (FILE * logfile)
     for (l=list; l!=NULL; l=l->next)
         printMessage (logfile, l->level, l->name, l->message, l->file, l->line);
 
-    if (logfile != NULL)
-        fflush (logfile);
+    if (logfile != TR_BAD_SYS_FILE)
+        tr_sys_file_flush (logfile, NULL);
 
     tr_logFreeQueue (list);
+}
+
+static void
+reportStatus (void)
+{
+    const double up = tr_sessionGetRawSpeed_KBps (mySession, TR_UP);
+    const double dn = tr_sessionGetRawSpeed_KBps (mySession, TR_DOWN);
+
+    if (up>0 || dn>0)
+	sd_notifyf (0, "STATUS=Uploading %.2f KBps, Downloading %.2f KBps.\n", up, dn);
+    else
+	sd_notify (0, "STATUS=Idle.\n");
+}
+
+static void
+periodicUpdate (evutil_socket_t fd UNUSED, short what UNUSED, void *watchdir)
+{
+    dtr_watchdir_update (watchdir);
+
+    pumpLogMessages (logfile);
+
+    reportStatus ();
 }
 
 static tr_rpc_callback_status
@@ -351,7 +404,7 @@ on_rpc_callback (tr_session            * session UNUSED,
                  void                  * user_data UNUSED)
 {
     if (type == TR_RPC_SESSION_CLOSE)
-        closing = true;
+        event_base_loopexit(ev_base, NULL);
     return TR_RPC_OK;
 }
 
@@ -370,12 +423,17 @@ main (int argc, char ** argv)
     dtr_watchdir * watchdir = NULL;
     bool pidfile_created = false;
     tr_session * session = NULL;
+    struct event *status_ev;
+
+#ifdef _WIN32
+    tr_win32_make_args_utf8 (&argc, &argv);
+#endif
 
     key_pidfile = tr_quark_new ("pidfile",  7);
 
     signal (SIGINT, gotsig);
     signal (SIGTERM, gotsig);
-#ifndef WIN32
+#ifndef _WIN32
     signal (SIGHUP, gotsig);
 #endif
 
@@ -408,11 +466,8 @@ main (int argc, char ** argv)
                       break;
             case 'd': dumpSettings = true;
                       break;
-            case 'e': logfile = fopen (optarg, LOGFILE_MODE_STR);
-                      if (logfile)
+            case 'e': if (reopen_log_file (optarg))
                           logfileName = optarg;
-                      else
-                          fprintf (stderr, "Couldn't open \"%s\": %s\n", optarg, tr_strerror (errno));
                       break;
             case 'f': foreground = true;
                       break;
@@ -487,8 +542,8 @@ main (int argc, char ** argv)
         }
     }
 
-    if (foreground && !logfile)
-        logfile = stderr;
+    if (foreground && logfile == TR_BAD_SYS_FILE)
+        logfile = tr_sys_file_get_std (TR_STD_SYS_FILE_ERR, NULL);
 
     if (!loaded)
     {
@@ -514,6 +569,16 @@ main (int argc, char ** argv)
 
     sd_notifyf (0, "MAINPID=%d\n", (int)getpid()); 
 
+    /* setup event state */
+    ev_base = event_base_new();
+    if (ev_base == NULL)
+    {
+        char buf[256];
+        tr_snprintf(buf, sizeof(buf), "Failed to init daemon event state: %s", tr_strerror(errno));
+        printMessage (logfile, TR_LOG_ERROR, MY_NAME, buf, __FILE__, __LINE__);
+        exit (1);
+    }
+
     /* start the session */
     tr_formatter_mem_init (MEM_K, MEM_K_STR, MEM_M_STR, MEM_G_STR, MEM_T_STR);
     tr_formatter_size_init (DISK_K, DISK_K_STR, DISK_M_STR, DISK_G_STR, DISK_T_STR);
@@ -527,16 +592,22 @@ main (int argc, char ** argv)
     tr_variantDictFindStr (&settings, key_pidfile, &pid_filename, NULL);
     if (pid_filename && *pid_filename)
     {
-        FILE * fp = fopen (pid_filename, "w+");
-        if (fp != NULL)
+        tr_error * error = NULL;
+        tr_sys_file_t fp = tr_sys_file_open (pid_filename,
+                                             TR_SYS_FILE_WRITE | TR_SYS_FILE_CREATE | TR_SYS_FILE_TRUNCATE,
+                                             0666, &error);
+        if (fp != TR_BAD_SYS_FILE)
         {
-            fprintf (fp, "%d", (int)getpid ());
-            fclose (fp);
+            tr_sys_file_write_fmt (fp, "%d", NULL, (int)getpid ());
+            tr_sys_file_close (fp, NULL);
             tr_logAddInfo ("Saved pidfile \"%s\"", pid_filename);
             pidfile_created = true;
         }
         else
-            tr_logAddError ("Unable to save pidfile \"%s\": %s", pid_filename, tr_strerror (errno));
+        {
+            tr_logAddError ("Unable to save pidfile \"%s\": %s", pid_filename, error->message);
+            tr_error_free (error);
+        }
     }
 
     if (tr_variantDictFindBool (&settings, TR_KEY_rpc_authentication_required, &boolVal) && boolVal)
@@ -579,28 +650,42 @@ main (int argc, char ** argv)
         openlog (MY_NAME, LOG_CONS|LOG_PID, LOG_DAEMON);
 #endif
 
-  sd_notify( 0, "READY=1\n" ); 
+    /* Create new timer event to report daemon status */
+    {
+        struct timeval one_sec = { 1, 0 };
+        status_ev = event_new(ev_base, -1, EV_PERSIST, &periodicUpdate, watchdir);
+        if (status_ev == NULL)
+        {
+            tr_logAddError("Failed to create status event %s", tr_strerror(errno));
+            goto cleanup;
+        }
+        if (event_add(status_ev, &one_sec) == -1)
+        {
+            tr_logAddError("Failed to add status event %s", tr_strerror(errno));
+            goto cleanup;
+        }
+    }
 
-  while (!closing)
-    { 
-      double up;
-      double dn;
+    sd_notify( 0, "READY=1\n" );
 
-      tr_wait_msec (1000); /* sleep one second */ 
+    /* Run daemon event loop */
+    if (event_base_dispatch(ev_base) == -1)
+    {
+        tr_logAddError("Failed to launch daemon event loop: %s", tr_strerror(errno));
+	goto cleanup;
+    }
 
-      dtr_watchdir_update (watchdir); 
-      pumpLogMessages (logfile); 
-
-      up = tr_sessionGetRawSpeed_KBps (mySession, TR_UP);
-      dn = tr_sessionGetRawSpeed_KBps (mySession, TR_DOWN);
-      if (up>0 || dn>0)
-        sd_notifyf (0, "STATUS=Uploading %.2f KBps, Downloading %.2f KBps.\n", up, dn); 
-      else
-        sd_notify (0, "STATUS=Idle.\n"); 
-    } 
-
+cleanup:
     sd_notify( 0, "STATUS=Closing transmission session...\n" );
     printf ("Closing transmission session...");
+
+    if (status_ev)
+    {
+        event_del(status_ev);
+        event_free(status_ev);
+    }
+    event_base_free(ev_base);
+
     tr_sessionSaveSettings (mySession, configDir, &settings);
     dtr_watchdir_free (watchdir);
     tr_sessionClose (mySession);
@@ -618,7 +703,7 @@ main (int argc, char ** argv)
 
     /* cleanup */
     if (pidfile_created)
-        tr_remove (pid_filename);
+        tr_sys_path_remove (pid_filename, NULL);
     tr_variantFree (&settings);
     sd_notify (0, "STATUS=\n");
     return 0;

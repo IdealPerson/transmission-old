@@ -8,9 +8,6 @@ AM_CFLAGS = \
     @ZLIB_CFLAGS@ \
     @PTHREAD_CFLAGS@
 
-AM_LDFLAGS = \
-    @ZLIB_LDFLAGS@
-
 EXTRA_DIST = \
     transmission-daemon.service
 
@@ -34,7 +31,8 @@ LDADD = \
     @INTLLIBS@ \
     @SYSTEMD_DAEMON_LIBS@ \
     @ZLIB_LIBS@ \
-    @PTHREAD_LIBS@
+    @PTHREAD_LIBS@ \
+    ${LIBM}
 
 noinst_HEADERS = \
     watch.h

@@ -21,6 +21,7 @@
 #include "cache.h"
 #include "completion.h"
 #include "crypto.h" /* tr_sha1 () */
+#include "file.h"
 #include "log.h"
 #include "peer-io.h"
 #include "peer-mgr.h"
@@ -32,6 +33,10 @@
 #include "utils.h"
 #include "variant.h"
 #include "version.h"
+
+#ifndef EBADMSG
+ #define EBADMSG EINVAL
+#endif
 
 /**
 ***
@@ -277,14 +282,14 @@ myDebug (const char * file, int line,
          const struct tr_peerMsgs * msgs,
          const char * fmt, ...)
 {
-  FILE * fp = tr_logGetFile ();
+  const tr_sys_file_t fp = tr_logGetFile ();
 
-  if (fp)
+  if (fp != TR_BAD_SYS_FILE)
     {
       va_list           args;
       char              timestr[64];
       struct evbuffer * buf = evbuffer_new ();
-      char *            base = tr_basename (file);
+      char *            base = tr_sys_path_basename (file, NULL);
       char *            message;
 
       evbuffer_add_printf (buf, "[%s] %s - %s [%s]: ",
@@ -295,10 +300,10 @@ myDebug (const char * file, int line,
       va_start (args, fmt);
       evbuffer_add_vprintf (buf, fmt, args);
       va_end (args);
-      evbuffer_add_printf (buf, " (%s:%d)\n", base, line);
+      evbuffer_add_printf (buf, " (%s:%d)", base, line);
 
       message = evbuffer_free_to_str (buf);
-      fputs (message, fp);
+      tr_sys_file_write_line (fp, message, NULL);
 
       tr_free (base);
       tr_free (message);
@@ -1339,7 +1344,7 @@ peerMadeRequest (tr_peerMsgs * msgs, const struct peer_request * req)
     const int clientHasPiece = reqIsValid && tr_torrentPieceIsComplete (msgs->torrent, req->index);
     const int peerIsChoked = msgs->peer_is_choked;
 
-    int allow = false;
+    bool allow = false;
 
     if (!reqIsValid)
         dbgmsg (msgs, "rejecting an invalid request.");
@@ -1692,6 +1697,12 @@ clientGotBlock (tr_peerMsgs                * msgs,
 
     assert (msgs);
     assert (req);
+
+    if (!requestIsValid (msgs, req)) {
+        dbgmsg (msgs, "dropping invalid block %u:%u->%u",
+                req->index, req->offset, req->length);
+        return EBADMSG;
+    }
 
     if (req->length != tr_torBlockCountBytes (msgs->torrent, block)) {
         dbgmsg (msgs, "wrong block size -- expected %u, got %d",

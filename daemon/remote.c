@@ -9,17 +9,10 @@
 
 #include <assert.h>
 #include <ctype.h> /* isspace */
-#include <errno.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h> /* strcmp */
-
-#ifdef WIN32
- #include <direct.h> /* getcwd */
-#else
- #include <unistd.h> /* getcwd */
-#endif
 
 #include <event2/buffer.h>
 
@@ -27,6 +20,8 @@
 #include <curl/curl.h>
 
 #include <libtransmission/transmission.h>
+#include <libtransmission/error.h>
+#include <libtransmission/file.h>
 #include <libtransmission/log.h>
 #include <libtransmission/rpcimpl.h>
 #include <libtransmission/tr-getopt.h>
@@ -498,21 +493,18 @@ static char*
 tr_getcwd (void)
 {
   char * result;
-  char buf[2048];
+  tr_error * error = NULL;
 
-#ifdef WIN32
-  result = _getcwd (buf, sizeof (buf));
-#else
-  result = getcwd (buf, sizeof (buf));
-#endif
+  result = tr_sys_dir_get_current (&error);
 
   if (result == NULL)
     {
-      fprintf (stderr, "getcwd error: \"%s\"", tr_strerror (errno));
-      *buf = '\0';
+      fprintf (stderr, "getcwd error: \"%s\"", error->message);
+      tr_error_free (error);
+      result = tr_strdup ("");
     }
 
-  return tr_strdup (buf);
+  return result;
 }
 
 static char*
@@ -1057,7 +1049,7 @@ printDetails (tr_variant * top)
                         break;
                     case TR_RATIOLIMIT_SINGLE:
                         if (tr_variantDictFindReal (t, TR_KEY_seedRatioLimit, &d))
-                            printf ("  Ratio Limit: %.2f\n", d);
+                            printf ("  Ratio Limit: %s\n", strlratio2 (buf, d, sizeof(buf)));
                         break;
                     case TR_RATIOLIMIT_UNLIMITED:
                         printf ("  Ratio Limit: Unlimited\n");
@@ -1566,7 +1558,7 @@ printSession (tr_variant * top)
                 printf ("  Peer limit: %" PRId64 "\n", peerLimit);
 
                 if (seedRatioLimited)
-                    tr_snprintf (buf, sizeof (buf), "%.2f", seedRatioLimit);
+                    strlratio2 (buf, seedRatioLimit, sizeof(buf));
                 else
                     tr_strlcpy (buf, "Unlimited", sizeof (buf));
                 printf ("  Default seed ratio limit: %s\n", buf);
@@ -1916,13 +1908,11 @@ processArgs (const char * rpcurl, int argc, const char ** argv)
                     break;
 
                 case 810: /* authenv */
+                    auth = tr_env_get_string ("TR_AUTH", NULL);
+                    if (auth == NULL)
                     {
-                        char *authenv = getenv ("TR_AUTH");
-                        if (!authenv) {
-                            fprintf (stderr, "The TR_AUTH environment variable is not set\n");
-                            exit (0);
-                        }
-                        auth = tr_strdup (authenv);
+                        fprintf (stderr, "The TR_AUTH environment variable is not set\n");
+                        exit (0);
                     }
                     break;
 
@@ -2415,6 +2405,10 @@ main (int argc, char ** argv)
     char * host = NULL;
     char * rpcurl = NULL;
     int exit_status = EXIT_SUCCESS;
+
+#ifdef _WIN32
+    tr_win32_make_args_utf8 (&argc, &argv);
+#endif
 
     if (argc < 2) {
         showUsage ();

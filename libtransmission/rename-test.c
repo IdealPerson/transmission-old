@@ -11,16 +11,13 @@
 #include <errno.h>
 #include <stdio.h> /* fopen() */
 #include <string.h> /* strcmp() */
-#include <stdio.h>
 
-#include <sys/types.h> /* stat() */
-#include <sys/stat.h> /* stat() */
-#include <unistd.h> /* stat(), sync() */
+#include <unistd.h> /* sync() */
 
 #include "transmission.h"
+#include "file.h"
 #include "resume.h"
 #include "torrent.h" /* tr_isTorrent() */
-#include "utils.h" /* tr_mkdirp() */
 #include "variant.h"
 
 #include "libtransmission-test.h"
@@ -55,7 +52,7 @@ testFileExistsAndConsistsOfThisString (const tr_torrent * tor, tr_file_index_t f
       uint8_t * contents;
       size_t contents_len;
 
-      assert (tr_fileExists (path, NULL));
+      assert (tr_sys_path_exists (path, NULL));
 
       contents = tr_loadFile (path, &contents_len);
 
@@ -93,33 +90,10 @@ torrentRenameAndWait (tr_torrent * tor,
 ***/
 
 static void
-create_file_with_contents (const char * path, const char * str)
-{
-  FILE * fp;
-  char * dir;
-  const int tmperr = errno;
-
-  dir = tr_dirname (path);
-  errno = 0;
-  tr_mkdirp (dir, 0700);
-  assert (errno == 0);
-  tr_free (dir);
-
-  tr_remove (path);
-  fp = fopen (path, "wb");
-  fprintf (fp, "%s", str);
-  fclose (fp);
-
-  sync ();
-
-  errno = tmperr;
-}
-
-static void
 create_single_file_torrent_contents (const char * top)
 {
   char * path = tr_buildPath (top, "hello-world.txt", NULL);
-  create_file_with_contents (path, "hello, world!\n");
+  libtest_create_file_with_string_contents (path, "hello, world!\n");
   tr_free (path);
 }
 
@@ -211,17 +185,17 @@ test_single_filename_torrent (void)
   ***/
 
   tmpstr = tr_buildPath (tor->currentDir, "hello-world.txt", NULL); 
-  check (tr_fileExists (tmpstr, NULL));
+  check (tr_sys_path_exists (tmpstr, NULL));
   check_streq ("hello-world.txt", tr_torrentName(tor));
   check_int_eq (0, torrentRenameAndWait (tor, tor->info.name, "foobar"));
-  check (!tr_fileExists (tmpstr, NULL)); /* confirm the old filename can't be found */
+  check (!tr_sys_path_exists (tmpstr, NULL)); /* confirm the old filename can't be found */
   tr_free (tmpstr);
   check (tor->info.files[0].is_renamed); /* confirm the file's 'renamed' flag is set */
   check_streq ("foobar", tr_torrentName(tor)); /* confirm the torrent's name is now 'foobar' */
   check_streq ("foobar", tor->info.files[0].name); /* confirm the file's name is now 'foobar' in our struct */
   check (strstr (tor->info.torrent, "foobar") == NULL); /* confirm the name in the .torrent file hasn't changed */
   tmpstr = tr_buildPath (tor->currentDir, "foobar", NULL); 
-  check (tr_fileExists (tmpstr, NULL)); /* confirm the file's name is now 'foobar' on the disk */
+  check (tr_sys_path_exists (tmpstr, NULL)); /* confirm the file's name is now 'foobar' on the disk */
   tr_free (tmpstr);
   check (testFileExistsAndConsistsOfThisString (tor, 0, "hello, world!\n")); /* confirm the contents are right */
 
@@ -237,9 +211,9 @@ test_single_filename_torrent (void)
   ***/
 
   tmpstr = tr_buildPath (tor->currentDir, "foobar", NULL); 
-  check (tr_fileExists (tmpstr, NULL));
+  check (tr_sys_path_exists (tmpstr, NULL));
   check_int_eq (0, torrentRenameAndWait (tor, "foobar", "hello-world.txt"));
-  check (!tr_fileExists (tmpstr, NULL));
+  check (!tr_sys_path_exists (tmpstr, NULL));
   check (tor->info.files[0].is_renamed);
   check_streq ("hello-world.txt", tor->info.files[0].name);
   check_streq ("hello-world.txt", tr_torrentName(tor));
@@ -264,19 +238,19 @@ create_multifile_torrent_contents (const char * top)
   char * path;
 
   path = tr_buildPath (top, "Felidae", "Felinae", "Acinonyx", "Cheetah", "Chester", NULL);
-  create_file_with_contents (path, "It ain't easy bein' cheesy.\n");
+  libtest_create_file_with_string_contents (path, "It ain't easy bein' cheesy.\n");
   tr_free (path);
 
   path = tr_buildPath (top, "Felidae", "Pantherinae", "Panthera", "Tiger", "Tony", NULL);
-  create_file_with_contents (path, "They’re Grrrrreat!\n");
+  libtest_create_file_with_string_contents (path, "They’re Grrrrreat!\n");
   tr_free (path);
 
   path = tr_buildPath (top, "Felidae", "Felinae", "Felis", "catus", "Kyphi", NULL);
-  create_file_with_contents (path, "Inquisitive\n");
+  libtest_create_file_with_string_contents (path, "Inquisitive\n");
   tr_free (path);
 
   path = tr_buildPath (top, "Felidae", "Felinae", "Felis", "catus", "Saffron", NULL);
-  create_file_with_contents (path, "Tough\n");
+  libtest_create_file_with_string_contents (path, "Tough\n");
   tr_free (path);
 
   sync ();
@@ -391,7 +365,7 @@ test_multifile_torrent (void)
   for (i=0; i<4; ++i)
     {
       check_streq (expected_files[i], files[i].name);
-      check (testFileExistsAndConsistsOfThisString (tor, 1, expected_contents[1]));
+      check (testFileExistsAndConsistsOfThisString (tor, i, expected_contents[i]));
     }
   check (files[0].is_renamed == false);
   check (files[1].is_renamed == true);
@@ -405,13 +379,13 @@ test_multifile_torrent (void)
   /* remove the directory Felidae/Felinae/Felis/catus */
   str = tr_torrentFindFile (tor, 1);
   check (str != NULL);
-  tr_remove (str);
+  tr_sys_path_remove (str, NULL);
   tr_free (str);
   str = tr_torrentFindFile (tor, 2);
   check (str != NULL);
-  tr_remove (str);
-  tmp = tr_dirname (str);
-  tr_remove (tmp);
+  tr_sys_path_remove (str, NULL);
+  tmp = tr_sys_path_dirname (str, NULL);
+  tr_sys_path_remove (tmp, NULL);
   tr_free (tmp);
   tr_free (str);
   sync ();
@@ -461,6 +435,43 @@ test_multifile_torrent (void)
       check_streq (strings[i], files[i].name);
       testFileExistsAndConsistsOfThisString (tor, i, expected_contents[i]);
     }
+
+  /**
+  ***  Test renaming prefixes (shouldn't work)
+  **/
+
+  tr_torrentRemove (tor, false, NULL);
+  do {
+    tr_wait_msec (10);
+  } while (0);
+  ctor = tr_ctorNew (session);
+  tor = create_torrent_from_base64_metainfo (ctor,
+    "ZDEwOmNyZWF0ZWQgYnkyNTpUcmFuc21pc3Npb24vMi42MSAoMTM0MDcpMTM6Y3JlYXRpb24gZGF0"
+    "ZWkxMzU4NTU1NDIwZTg6ZW5jb2Rpbmc1OlVURi04NDppbmZvZDU6ZmlsZXNsZDY6bGVuZ3RoaTI4"
+    "ZTQ6cGF0aGw3OkZlbGluYWU4OkFjaW5vbnl4NzpDaGVldGFoNzpDaGVzdGVyZWVkNjpsZW5ndGhp"
+    "MTJlNDpwYXRobDc6RmVsaW5hZTU6RmVsaXM1OmNhdHVzNTpLeXBoaWVlZDY6bGVuZ3RoaTZlNDpw"
+    "YXRobDc6RmVsaW5hZTU6RmVsaXM1OmNhdHVzNzpTYWZmcm9uZWVkNjpsZW5ndGhpMjFlNDpwYXRo"
+    "bDExOlBhbnRoZXJpbmFlODpQYW50aGVyYTU6VGlnZXI0OlRvbnllZWU0Om5hbWU3OkZlbGlkYWUx"
+    "MjpwaWVjZSBsZW5ndGhpMzI3NjhlNjpwaWVjZXMyMDp27buFkmy8ICfNX4nsJmt0Ckm2Ljc6cHJp"
+    "dmF0ZWkwZWVl");
+  check (tr_isTorrent (tor));
+  files = tor->info.files;
+
+  /* rename prefix of top */
+  check_int_eq (EINVAL, torrentRenameAndWait (tor, "Feli", "FelidaeX"));
+  check_streq (tor->info.name, "Felidae");
+  check (files[0].is_renamed == false);
+  check (files[1].is_renamed == false);
+  check (files[2].is_renamed == false);
+  check (files[3].is_renamed == false);
+
+  /* rename false path */
+  check_int_eq (EINVAL, torrentRenameAndWait (tor, "Felidae/FelinaeX", "Genus Felinae"));
+  check_streq (tor->info.name, "Felidae");
+  check (files[0].is_renamed == false);
+  check (files[1].is_renamed == false);
+  check (files[2].is_renamed == false);
+  check (files[3].is_renamed == false);
 
   /***
   ****

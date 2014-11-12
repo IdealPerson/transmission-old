@@ -9,9 +9,8 @@
 
 #include <assert.h>
 #include <string.h> /* strlen (), strstr () */
-#include <stdlib.h> /* getenv () */
 
-#ifdef WIN32
+#ifdef _WIN32
   #include <ws2tcpip.h>
 #else
   #include <sys/select.h>
@@ -22,6 +21,7 @@
 #include <event2/buffer.h>
 
 #include "transmission.h"
+#include "file.h"
 #include "list.h"
 #include "log.h"
 #include "net.h" /* tr_address */
@@ -100,7 +100,7 @@ struct tr_web
 {
   bool curl_verbose;
   bool curl_ssl_verify;
-  const char * curl_ca_bundle;
+  char * curl_ca_bundle;
   int close_mode;
   struct tr_web_task * tasks;
   tr_lock * taskLock;
@@ -347,7 +347,7 @@ tr_select (int nfds,
            fd_set * r_fd_set, fd_set * w_fd_set, fd_set * c_fd_set,
            struct timeval  * t)
 {
-#ifdef WIN32
+#ifdef _WIN32
   if (!r_fd_set->fd_count && !w_fd_set->fd_count && !c_fd_set->fd_count)
     {
       const long int msec = t->tv_sec*1000 + t->tv_usec/1000;
@@ -386,9 +386,9 @@ tr_webThreadFunc (void * vsession)
   web->close_mode = ~0;
   web->taskLock = tr_lockNew ();
   web->tasks = NULL;
-  web->curl_verbose = getenv ("TR_CURL_VERBOSE") != NULL;
-  web->curl_ssl_verify = getenv ("TR_CURL_SSL_VERIFY") != NULL;
-  web->curl_ca_bundle = getenv ("CURL_CA_BUNDLE");
+  web->curl_verbose = tr_env_key_exists ("TR_CURL_VERBOSE");
+  web->curl_ssl_verify = tr_env_key_exists ("TR_CURL_SSL_VERIFY");
+  web->curl_ca_bundle = tr_env_get_string ("CURL_CA_BUNDLE", NULL);
   if (web->curl_ssl_verify)
     {
       tr_logAddNamedInfo ("web", "will verify tracker certs using envvar CURL_CA_BUNDLE: %s",
@@ -398,7 +398,7 @@ tr_webThreadFunc (void * vsession)
     }
 
   str = tr_buildPath (session->configDir, "cookies.txt", NULL);
-  if (tr_fileExists (str, NULL))
+  if (tr_sys_path_exists (str, NULL))
     web->cookie_filename = tr_strdup (str);
   tr_free (str);
 
@@ -521,6 +521,7 @@ tr_webThreadFunc (void * vsession)
   tr_list_free (&paused_easy_handles, NULL);
   curl_multi_cleanup (multi);
   tr_lockFree (web->taskLock);
+  tr_free (web->curl_ca_bundle);
   tr_free (web->cookie_filename);
   tr_free (web);
   session->web = NULL;

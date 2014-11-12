@@ -953,7 +953,7 @@ static void sleepCallback(void * controller, io_service_t y, natural_t messageTy
         
         //determine to show the options window
         const BOOL showWindow = type == ADD_SHOW_OPTIONS || ([fDefaults boolForKey: @"DownloadAsk"]
-                                    && (info.isMultifile || ![fDefaults boolForKey: @"DownloadAskMulti"])
+                                    && (info.isFolder || ![fDefaults boolForKey: @"DownloadAskMulti"])
                                     && (type != ADD_AUTO || ![fDefaults boolForKey: @"DownloadAskManual"]));
         tr_metainfoFree(&info);
         
@@ -2116,6 +2116,8 @@ static void sleepCallback(void * controller, io_service_t y, natural_t messageTy
         
         [notification setHasActionButton: YES];
         [notification setActionButtonTitle: NSLocalizedString(@"Show", "notification button")];
+        
+        notification.additionalActions = @[ [NSUserNotificationAction actionWithIdentifier:@"a" title:@"a"], [NSUserNotificationAction actionWithIdentifier:@"b" title:@"b"] ];
         
         NSMutableDictionary * userInfo = [NSMutableDictionary dictionaryWithObject: [torrent hashString] forKey: @"Hash"];
         if (location)
@@ -3953,6 +3955,10 @@ static void sleepCallback(void * controller, io_service_t y, natural_t messageTy
         [groupItem setView: segmentedControl];
         NSSegmentedCell * segmentedCell = (NSSegmentedCell *)[segmentedControl cell];
         
+        if ([NSApp isOnYosemiteOrBetter]) {
+            segmentedControl.segmentStyle = NSSegmentStyleSeparated;
+        }
+        
         [segmentedControl setSegmentCount: 2];
         [segmentedCell setTrackingMode: NSSegmentSwitchTrackingMomentary];
         
@@ -3994,6 +4000,10 @@ static void sleepCallback(void * controller, io_service_t y, natural_t messageTy
         [segmentedControl setCell: [[[ToolbarSegmentedCell alloc] init] autorelease]];
         [groupItem setView: segmentedControl];
         NSSegmentedCell * segmentedCell = (NSSegmentedCell *)[segmentedControl cell];
+        
+        if ([NSApp isOnYosemiteOrBetter]) {
+            segmentedControl.segmentStyle = NSSegmentStyleSeparated;
+        }
         
         [segmentedControl setSegmentCount: 2];
         [segmentedCell setTrackingMode: NSSegmentSwitchTrackingMomentary];

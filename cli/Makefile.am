@@ -7,9 +7,6 @@ AM_CFLAGS = \
     @ZLIB_CFLAGS@ \
     @PTHREAD_CFLAGS@
 
-AM_LDFLAGS = \
-    @ZLIB_LDFLAGS@
-
 bin_PROGRAMS = transmission-cli
 
 dist_man_MANS = transmission-cli.1
@@ -27,5 +24,6 @@ transmission_cli_LDADD = \
     @OPENSSL_LIBS@ \
     @INTLLIBS@ \
     @ZLIB_LIBS@ \
-    @PTHREAD_LIBS@
+    @PTHREAD_LIBS@ \
+    ${LIBM}
 

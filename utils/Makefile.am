@@ -5,10 +5,8 @@ AM_CFLAGS = \
     @LIBCURL_CFLAGS@ \
     @OPENSSL_CFLAGS@ \
     @ZLIB_CFLAGS@ \
-    @PTHREAD_CFLAGS@
-
-AM_LDFLAGS = \
-    @ZLIB_LDFLAGS@
+    @PTHREAD_CFLAGS@ \
+    ${LIBM}
 
 bin_PROGRAMS = \
     transmission-create \
@@ -18,6 +16,9 @@ bin_PROGRAMS = \
 transmission_create_SOURCES = create.c
 transmission_edit_SOURCES = edit.c
 transmission_show_SOURCES = show.c
+
+noinst_HEADERS = \
+    units.h
 
 dist_man_MANS = \
     transmission-create.1 \
@@ -35,6 +36,7 @@ transmission_create_LDADD = \
     @LIBCURL_LIBS@ \
     @OPENSSL_LIBS@ \
     @ZLIB_LIBS@ \
-    @PTHREAD_LIBS@
+    @PTHREAD_LIBS@ \
+    ${LIBM}
 transmission_edit_LDADD = $(transmission_create_LDADD)
 transmission_show_LDADD = $(transmission_create_LDADD)

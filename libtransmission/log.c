@@ -10,11 +10,11 @@
 #include <assert.h>
 #include <errno.h>
 #include <stdio.h>
-#include <stdlib.h> /* getenv() */
 
 #include <event2/buffer.h>
 
 #include "transmission.h"
+#include "file.h"
 #include "log.h"
 #include "platform.h" /* tr_lock */
 #include "utils.h"
@@ -26,7 +26,7 @@ static tr_log_message *  myQueue = NULL;
 static tr_log_message ** myQueueTail = &myQueue;
 static int            myQueueLength = 0;
 
-#ifndef WIN32
+#ifndef _WIN32
   /* make null versions of these win32 functions */
   static inline int IsDebuggerPresent (void) { return false; }
   static inline void OutputDebugStringA (const void * unused UNUSED) { }
@@ -57,32 +57,24 @@ getMessageLock (void)
   return l;
 }
 
-void*
+tr_sys_file_t
 tr_logGetFile (void)
 {
   static bool initialized = false;
-  static FILE * file = NULL;
+  static tr_sys_file_t file = TR_BAD_SYS_FILE;
 
   if (!initialized)
     {
-      int fd = 0;
-      const char * str = getenv ("TR_DEBUG_FD");
-
-      if (str && *str)
-        fd = atoi (str);
+      const int fd = tr_env_get_int ("TR_DEBUG_FD", 0);
 
       switch (fd)
         {
           case 1:
-            file = stdout;
+            file = tr_sys_file_get_std (TR_STD_SYS_FILE_OUT, NULL);
             break;
 
           case 2:
-            file = stderr;
-            break;
-
-          default:
-            file = NULL;
+            file = tr_sys_file_get_std (TR_STD_SYS_FILE_ERR, NULL);
             break;
         }
 
@@ -135,9 +127,9 @@ tr_logFreeQueue (tr_log_message * list)
   while (NULL != list)
     {
       next = list->next;
-      free (list->message);
-      free (list->name);
-      free (list);
+      tr_free (list->message);
+      tr_free (list->name);
+      tr_free (list);
       list = next;
     }
 }
@@ -159,9 +151,9 @@ tr_logGetTimeStr (char * buf, int buflen)
 
   seconds = tv.tv_sec;
   tr_localtime_r (&seconds, &now_tm);
-  strftime (tmp, sizeof (tmp), "%H:%M:%S", &now_tm);
+  strftime (tmp, sizeof (tmp), "%Y-%m-%d %H:%M:%S.%%03d %Z", &now_tm); 
   milliseconds = tv.tv_usec / 1000;
-  tr_snprintf (buf, buflen, "%s.%03d", tmp, milliseconds);
+  tr_snprintf (buf, buflen, tmp, milliseconds);
 
   return buf;
 }
@@ -172,7 +164,7 @@ tr_logGetDeepEnabled (void)
   static int8_t deepLoggingIsActive = -1;
 
   if (deepLoggingIsActive < 0)
-    deepLoggingIsActive = IsDebuggerPresent () || (tr_logGetFile ()!=NULL);
+    deepLoggingIsActive = IsDebuggerPresent () || (tr_logGetFile () != TR_BAD_SYS_FILE);
 
   return deepLoggingIsActive != 0;
 }
@@ -184,14 +176,14 @@ tr_logAddDeep (const char  * file,
                const char  * fmt,
                ...)
 {
-  FILE * fp = tr_logGetFile ();
-  if (fp || IsDebuggerPresent ())
+  const tr_sys_file_t fp = tr_logGetFile ();
+  if (fp != TR_BAD_SYS_FILE || IsDebuggerPresent ())
     {
       va_list args;
       char timestr[64];
       char * message;
       struct evbuffer * buf = evbuffer_new ();
-      char * base = tr_basename (file);
+      char * base = tr_sys_path_basename (file, NULL);
 
       evbuffer_add_printf (buf, "[%s] ",
                            tr_logGetTimeStr (timestr, sizeof (timestr)));
@@ -200,12 +192,13 @@ tr_logAddDeep (const char  * file,
       va_start (args, fmt);
       evbuffer_add_vprintf (buf, fmt, args);
       va_end (args);
-      evbuffer_add_printf (buf, " (%s:%d)\n", base, line);
+      evbuffer_add_printf (buf, " (%s:%d)", base, line);
       /* FIXME (libevent2) ifdef this out for nonwindows platforms */
       message = evbuffer_free_to_str (buf);
       OutputDebugStringA (message);
-      if (fp)
-        fputs (message, fp);
+      OutputDebugStringA (TR_NATIVE_EOL_STR);
+      if (fp != TR_BAD_SYS_FILE)
+        tr_sys_file_write_line (fp, message, NULL);
 
       tr_free (message);
       tr_free (base);
@@ -266,20 +259,20 @@ tr_logAddMessage (const char * file,
         }
       else
         {
-          FILE * fp;
+          tr_sys_file_t fp;
           char timestr[64];
 
           fp = tr_logGetFile ();
-          if (fp == NULL)
-            fp = stderr;
+          if (fp == TR_BAD_SYS_FILE)
+            fp = tr_sys_file_get_std (TR_STD_SYS_FILE_ERR, NULL);
 
           tr_logGetTimeStr (timestr, sizeof (timestr));
 
           if (name)
-            fprintf (fp, "[%s] %s: %s\n", timestr, name, buf);
+            tr_sys_file_write_fmt (fp, "[%s] %s: %s" TR_NATIVE_EOL_STR, NULL, timestr, name, buf);
           else
-            fprintf (fp, "[%s] %s\n", timestr, buf);
-          fflush (fp);
+            tr_sys_file_write_fmt (fp, "[%s] %s" TR_NATIVE_EOL_STR, NULL, timestr, buf);
+          tr_sys_file_flush (fp, NULL);
         }
     }
 

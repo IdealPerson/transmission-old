@@ -9,7 +9,7 @@
 
 #include <stdio.h> /* fprintf () */
 #include <string.h> /* strcmp (), strchr (), memcmp () */
-#include <stdlib.h> /* getenv (), qsort () */
+#include <stdlib.h> /* qsort () */
 #include <time.h>
 
 #define CURL_DISABLE_TYPECHECK /* otherwise -Wunreachable-code goes insane */
@@ -24,28 +24,10 @@
 #include <libtransmission/variant.h>
 #include <libtransmission/version.h>
 
+#include "units.h"
+
 #define MY_NAME "transmission-show"
 #define TIMEOUT_SECS 30
-
-#define MEM_K 1024
-#define MEM_K_STR "KiB"
-#define MEM_M_STR "MiB"
-#define MEM_G_STR "GiB"
-#define MEM_T_STR "TiB"
-
-#define DISK_K 1000
-#define DISK_B_STR  "B"
-#define DISK_K_STR "kB"
-#define DISK_M_STR "MB"
-#define DISK_G_STR "GB"
-#define DISK_T_STR "TB"
-
-#define SPEED_K 1000
-#define SPEED_B_STR  "B/s"
-#define SPEED_K_STR "kB/s"
-#define SPEED_M_STR "MB/s"
-#define SPEED_G_STR "GB/s"
-#define SPEED_T_STR "TB/s"
 
 static tr_option options[] =
 {
@@ -206,7 +188,7 @@ tr_curl_easy_init (struct evbuffer * writebuf)
   curl_easy_setopt (curl, CURLOPT_WRITEFUNCTION, writeFunc);
   curl_easy_setopt (curl, CURLOPT_WRITEDATA, writebuf);
   curl_easy_setopt (curl, CURLOPT_HTTPAUTH, CURLAUTH_ANY);
-  curl_easy_setopt (curl, CURLOPT_VERBOSE, getenv ("TR_CURL_VERBOSE") != NULL);
+  curl_easy_setopt (curl, CURLOPT_VERBOSE, tr_env_key_exists ("TR_CURL_VERBOSE"));
   curl_easy_setopt (curl, CURLOPT_ENCODING, "");
   return curl;
 }
@@ -306,6 +288,10 @@ main (int argc, char * argv[])
   int err;
   tr_info inf;
   tr_ctor * ctor;
+
+#ifdef _WIN32
+  tr_win32_make_args_utf8 (&argc, &argv);
+#endif
 
   tr_logSetLevel (TR_LOG_ERROR);
   tr_formatter_mem_init (MEM_K, MEM_K_STR, MEM_M_STR, MEM_G_STR, MEM_T_STR);
