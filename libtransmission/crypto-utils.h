@@ -13,7 +13,7 @@
 #include <inttypes.h>
 #include <stddef.h>
 
-#include "utils.h" /* TR_GNUC_NULL_TERMINATED */
+#include "utils.h" /* TR_GNUC_MALLOC, TR_GNUC_NULL_TERMINATED */
 
 /**
 *** @addtogroup utils Utilities
@@ -142,6 +142,52 @@ int              tr_rand_int_weak      (int              upper_bound);
  */
 bool             tr_rand_buffer        (void           * buffer,
                                         size_t           length);
+
+/**
+ * @brief Translate a block of bytes into base64.
+ * @return a newly-allocated null-terminated string that can be freed with tr_free ()
+ */
+void           * tr_base64_encode      (const void     * input,
+                                        size_t           input_length,
+                                        size_t         * output_length) TR_GNUC_MALLOC;
+
+/**
+ * @brief Translate null-terminated string into base64.
+ * @return a newly-allocated null-terminated string that can be freed with tr_free ()
+ */
+void           * tr_base64_encode_str  (const char     * input,
+                                        size_t         * output_length) TR_GNUC_MALLOC;
+
+/**
+ * @brief Translate a block of bytes into base64 (internal, do not use).
+ * @return a newly-allocated null-terminated string that can be freed with tr_free ()
+ */
+void           * tr_base64_encode_impl (const void     * input,
+                                        size_t           input_length,
+                                        size_t         * output_length) TR_GNUC_MALLOC;
+
+/**
+ * @brief Translate a block of bytes from base64 into raw form.
+ * @return a newly-allocated null-terminated string that can be freed with tr_free ()
+ */
+void           * tr_base64_decode      (const void     * input,
+                                        size_t           input_length,
+                                        size_t         * output_length) TR_GNUC_MALLOC;
+
+/**
+ * @brief Translate null-terminated string from base64 into raw form.
+ * @return a newly-allocated null-terminated string that can be freed with tr_free ()
+ */
+void           * tr_base64_decode_str  (const char     * input,
+                                        size_t         * output_length) TR_GNUC_MALLOC;
+
+/**
+ * @brief Translate null-terminated string from base64 into raw form (internal, do not use).
+ * @return a newly-allocated null-terminated string that can be freed with tr_free ()
+ */
+void           * tr_base64_decode_impl (const void     * input,
+                                        size_t           input_length,
+                                        size_t         * output_length) TR_GNUC_MALLOC;
 
 /** @} */
 
