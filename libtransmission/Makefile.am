@@ -91,6 +91,7 @@ noinst_HEADERS = \
   clients.h \
   ConvertUTF.h \
   crypto.h \
+  crypto-test-ref.h \
   crypto-utils.h \
   completion.h \
   error.h \
