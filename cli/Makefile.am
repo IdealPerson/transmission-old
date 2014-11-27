@@ -2,7 +2,7 @@ AM_CPPFLAGS = -I@top_srcdir@
 
 AM_CFLAGS = \
     @LIBEVENT_CFLAGS@ \
-    @OPENSSL_CFLAGS@ \
+    @CRYPTO_CFLAGS@ \
     @LIBCURL_CFLAGS@ \
     @ZLIB_CFLAGS@ \
     @PTHREAD_CFLAGS@
@@ -18,10 +18,11 @@ transmission_cli_LDADD = \
     @LIBNATPMP_LIBS@ \
     @LIBUPNP_LIBS@ \
     @DHT_LIBS@ \
+    @LIBB64_LIBS@ \
     @LIBUTP_LIBS@ \
     @LIBEVENT_LIBS@ \
     @LIBCURL_LIBS@ \
-    @OPENSSL_LIBS@ \
+    @CRYPTO_LIBS@ \
     @INTLLIBS@ \
     @ZLIB_LIBS@ \
     @PTHREAD_LIBS@ \

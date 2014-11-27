@@ -21,7 +21,7 @@ AM_CFLAGS = \
     @LIBEVENT_CFLAGS@ \
     @GTK_CFLAGS@ \
     @LIBCURL_CFLAGS@ \
-    @OPENSSL_CFLAGS@ \
+    @CRYPTO_CFLAGS@ \
     @ZLIB_CFLAGS@ \
     @PTHREAD_CFLAGS@
 
@@ -89,12 +89,13 @@ transmission_gtk_LDADD = \
     @LIBUPNP_LIBS@ \
     @LIBNATPMP_LIBS@ \
     @DHT_LIBS@ \
+    @LIBB64_LIBS@ \
     @LIBUTP_LIBS@ \
     @GTK_LIBS@ \
     @LIBAPPINDICATOR_LIBS@ \
     @LIBEVENT_LIBS@ \
     @LIBCURL_LIBS@ \
-    @OPENSSL_LIBS@ \
+    @CRYPTO_LIBS@ \
     @ZLIB_LIBS@ \
     @PTHREAD_LIBS@ \
     ${LIBM}

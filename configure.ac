@@ -43,6 +43,12 @@ LIBEVENT_MINIMUM=2.0.10
 AC_SUBST(LIBEVENT_MINIMUM)
 OPENSSL_MINIMUM=0.9.7
 AC_SUBST(OPENSSL_MINIMUM)
+CYASSL_MINIMUM=2.0.6
+AC_SUBST(CYASSL_MINIMUM)
+POLARSSL_MINIMUM=1.3
+AC_SUBST(POLARSSL_MINIMUM)
+MATRIXSSL_MINIMUM=3.6
+AC_SUBST(MATRIXSSL_MINIMUM)
 ZLIB_MINIMUM=1.2.3
 AC_SUBST(ZLIB_MINIMUM)
 
@@ -112,10 +118,22 @@ AC_SEARCH_LIBS(cos, [m])
 AC_SEARCH_LIBS([socket], [socket net])
 AC_SEARCH_LIBS([gethostbyname], [nsl bind])
 AC_SEARCH_LIBS([quotacursor_skipidtype], [quota])
-PKG_CHECK_MODULES(OPENSSL, [openssl >= $OPENSSL_MINIMUM], , [CHECK_SSL()])
 PKG_CHECK_MODULES(LIBCURL, [libcurl >= $CURL_MINIMUM])
 PKG_CHECK_MODULES(LIBEVENT, [libevent >= $LIBEVENT_MINIMUM])
 PKG_CHECK_MODULES(ZLIB, [zlib >= $ZLIB_MINIMUM])
+
+AC_ARG_WITH([crypto], AS_HELP_STRING([--with-crypto=PKG],
+            [Use specified crypto library: openssl (default), cyassl, polarssl, nss]),
+            [CRYPTO_PKG=$withval], [CRYPTO_PKG=openssl])
+AC_SUBST(CRYPTO_PKG)
+AS_IF([test "x$CRYPTO_PKG" = "xpolarssl"],
+      [PKG_CHECK_MODULES(CRYPTO, [polarssl >= $POLARSSL_MINIMUM])],
+      [test "x$CRYPTO_PKG" = "xcyassl"],
+      [PKG_CHECK_MODULES(CRYPTO, [cyassl >= $CYASSL_MINIMUM])],
+      [test "x$CRYPTO_PKG" = "xmatrixssl"],
+      [PKG_CHECK_MODULES(CRYPTO, [matrixssl >= $MATRIXSSL_MINIMUM])],
+      [test "x$CRYPTO_PKG" = "xopenssl"],
+      [PKG_CHECK_MODULES(CRYPTO, [openssl >= $OPENSSL_MINIMUM], , [CHECK_SSL()])])
 
 AC_SYS_LARGEFILE
 AC_CHECK_FUNCS([lseek64])
@@ -198,6 +216,18 @@ DHT_CFLAGS="-I\$(top_srcdir)/third-party/dht"
 DHT_LIBS="\$(top_builddir)/third-party/dht/libdht.a"
 AC_SUBST(DHT_CFLAGS)
 AC_SUBST(DHT_LIBS)
+
+
+dnl ----------------------------------------------------------------------------
+dnl
+dnl  libb64
+
+LIBB64_CFLAGS="-I\$(top_srcdir)/third-party/libb64"
+LIBB64_LIBS="\$(top_builddir)/third-party/libb64/libb64.a"
+BUILD_B64=1
+AC_SUBST(LIBB64_CFLAGS)
+AC_SUBST(LIBB64_LIBS)
+AM_CONDITIONAL(BUILD_B64, [test 1 -eq 1])
 
 
 dnl ----------------------------------------------------------------------------
@@ -526,6 +556,7 @@ AC_CONFIG_FILES([Makefile
                  utils/Makefile
                  third-party/Makefile
                  third-party/dht/Makefile
+                 third-party/libb64/Makefile
                  third-party/libutp/Makefile
                  third-party/libnatpmp/Makefile
                  third-party/miniupnp/Makefile
@@ -557,6 +588,7 @@ Configuration:
    Build libtransmission:                             yes
       * optimized for low-resource systems:           ${enable_lightweight}
       * µTP enabled:                                  ${build_utp}
+      * crypto library:                               ${CRYPTO_PKG}
 
    Build Command-Line client:                         ${build_cli}
 

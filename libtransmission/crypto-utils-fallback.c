@@ -85,3 +85,55 @@ tr_dh_secret_free (tr_dh_secret_t handle)
 }
 
 #endif /* TR_CRYPTO_DH_SECRET_FALLBACK */
+
+/***
+****
+***/
+
+#ifdef TR_CRYPTO_BASE64_FALLBACK
+
+#include <b64/cdecode.h>
+#include <b64/cencode.h>
+
+void *
+tr_base64_encode_impl (const void * input,
+                       size_t       input_length,
+                       size_t     * output_length)
+{
+  size_t my_output_length = 4 * ((input_length + 2) / 3);
+  char * output = tr_new (char, my_output_length + 1);
+  base64_encodestate state;
+
+  base64_init_encodestate (&state);
+  my_output_length = base64_encode_block (input, input_length, output, &state);
+  my_output_length += base64_encode_blockend (output + my_output_length, &state);
+
+  if (output_length != NULL)
+    *output_length = my_output_length;
+
+  output[my_output_length] = '\0';
+
+  return output;
+}
+
+void *
+tr_base64_decode_impl (const void * input,
+                       size_t       input_length,
+                       size_t     * output_length)
+{
+  size_t my_output_length = input_length / 4 * 3;
+  char * output = tr_new (char, my_output_length + 1);
+  base64_decodestate state;
+
+  base64_init_decodestate (&state);
+  my_output_length = base64_decode_block (input, input_length, output, &state);
+
+  if (output_length != NULL)
+    *output_length = my_output_length;
+
+  output[my_output_length] = '\0';
+
+  return output;
+}
+
+#endif /* TR_CRYPTO_BASE64_FALLBACK */

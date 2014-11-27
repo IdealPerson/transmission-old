@@ -28,6 +28,7 @@ INCLUDEPATH += $${TRANSMISSION_TOP}
 LIBS += $${TRANSMISSION_TOP}/libtransmission/libtransmission.a
 LIBS += $${LIBUTP_LIBS}
 LIBS += $${TRANSMISSION_TOP}/third-party/dht/libdht.a
+LIBS += $${TRANSMISSION_TOP}/third-party/libb64/libb64.a
 LIBS += $${LIBUPNP_LIBS}
 LIBS += $${LIBNATPMP_LIBS}
 unix: LIBS += -L$${EVENT_TOP}/lib -lz -lrt

@@ -5,12 +5,13 @@ AM_CPPFLAGS = \
 
 AM_CFLAGS = \
   @DHT_CFLAGS@ \
+  @LIBB64_CFLAGS@ \
   @LIBUTP_CFLAGS@ \
   @LIBUPNP_CFLAGS@ \
   @LIBNATPMP_CFLAGS@ \
   @LIBEVENT_CFLAGS@ \
   @LIBCURL_CFLAGS@ \
-  @OPENSSL_CFLAGS@ \
+  @CRYPTO_CFLAGS@ \
   @PTHREAD_CFLAGS@ \
   @ZLIB_CFLAGS@
 
@@ -29,7 +30,7 @@ libtransmission_a_SOURCES = \
   ConvertUTF.c \
   crypto.c \
   crypto-utils.c \
-  crypto-utils-openssl.c \
+  crypto-utils-@CRYPTO_PKG@.c \
   error.c \
   fdlimit.c \
   file.c \
@@ -172,10 +173,11 @@ apps_ldadd = \
   @LIBNATPMP_LIBS@ \
   @INTLLIBS@ \
   @DHT_LIBS@ \
+  @LIBB64_LIBS@ \
   @LIBUTP_LIBS@ \
   @LIBCURL_LIBS@ \
   @LIBEVENT_LIBS@ \
-  @OPENSSL_LIBS@ \
+  @CRYPTO_LIBS@ \
   @PTHREAD_LIBS@ \
   @ZLIB_LIBS@ \
   ${LIBM}
